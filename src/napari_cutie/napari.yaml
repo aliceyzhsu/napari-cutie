@@ -1,5 +1,5 @@
 name: napari-cutie
-display_name: Cutie
+display_name: napari-cutie
 # use 'hidden' to remove plugin from napari hub search results
 visibility: public
 # see https://napari.org/stable/plugins/manifest.html for valid categories
@@ -8,7 +8,7 @@ contributions:
   commands:
     - id: napari-cutie.get_reader
       python_name: napari_cutie._reader:napari_get_reader
-      title: Open data with Cutie
+      title: Open cellpose-styled .npy seg file
     - id: napari-cutie.write_multiple
       python_name: napari_cutie._writer:write_multiple
       title: Save multi-layer data with Cutie
@@ -18,18 +18,9 @@ contributions:
     - id: napari-cutie.make_sample_data
       python_name: napari_cutie._sample_data:make_sample_data
       title: Load sample data from Cutie
-    - id: napari-cutie.make_container_widget
-      python_name: napari_cutie:ImageThreshold
-      title: Make threshold Container widget
-    - id: napari-cutie.make_magic_widget
-      python_name: napari_cutie:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: napari-cutie.make_function_widget
-      python_name: napari_cutie:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: napari-cutie.make_qwidget
-      python_name: napari_cutie:ExampleQWidget
-      title: Make example QWidget
+    - id: napari-cutie.test_widget
+      python_name: napari_cutie:cutie_track_widget
+      title: cutie_track
   readers:
     - command: napari-cutie.get_reader
       accepts_directories: false
@@ -46,12 +37,5 @@ contributions:
       display_name: Cutie
       key: unique_id.1
   widgets:
-    - command: napari-cutie.make_container_widget
-      display_name: Container Threshold
-    - command: napari-cutie.make_magic_widget
-      display_name: Magic Threshold
-    - command: napari-cutie.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: napari-cutie.make_qwidget
-      display_name: Example QWidget
+    - command: napari-cutie.test_widget
+      display_name: Cutie Track
