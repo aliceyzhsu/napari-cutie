@@ -38,6 +38,7 @@ Tested on Windows only.
 git clone https://github.com/hkchengrex/Cutie.git
 cd Cutie
 pip install -e .
+cd ..
 ```
 
 #### Install napari
@@ -51,6 +52,7 @@ git clone https://github.com/aliceyzhsu/napari-cutie.git
 cd napari-cutie
 pip install -e .
 ```
+Note that you ara supposed to **git clone**. You don't want to directly download zip from github page since this may cause installation failure.
 
 ## Get Started
 - `napari` to run napari.
