@@ -38,6 +38,7 @@ Tested on Windows only.
 git clone https://github.com/hkchengrex/Cutie.git
 cd Cutie
 pip install -e .
+cd ..
 ```
 
 #### Install napari
@@ -51,6 +52,7 @@ git clone https://github.com/aliceyzhsu/napari-cutie.git
 cd napari-cutie
 pip install -e .
 ```
+Note that you ara supposed to **git clone**. You don't want to directly download zip from github page since this may cause installation failure.
 
 ## Get Started
 - `napari` to run napari.
@@ -61,10 +63,22 @@ pip install -e .
 - now that we have 1. an Image layer with N frames. 2. a Labels layer which have masks annotation on first frame, we are ready to run cutie tracking.
 - Plugins -> Cutie Track(napari-cutie) -> set appropriate parameters -> track
 
-## Contributing
+## development log
+### 07/19/2024
+- basic track code fix, now it works thoroughly as expected.
+- add a **shift** checkbox. when check, *the tracking box follows cells' movement*.
+  - so now, if you don't check the **shift** checkbox, it is a fixed version of original version.
+  - if you check the **shift** checkbox, you can see how the new feature works.
 
-Contributions are very welcome. Tests can be run with [tox], please ensure
-the coverage at least stays the same before you submit a pull request.
+> You could find that the shift method doesn't work well. 
+> 
+> A given processor must receive image with same box size, totally depend on first frame annotation, as input on each frame.
+> However, some cells could have intensive changes in its shape and size, so that the box may not cover the whole cell.
+> 
+> And, when using shift, it tends to mis-track one cell to another.
+> 
+> The codes work perfectly as expected since I've done lots of checks and experiments.
+> The problems described above are all about the "shift" method itself.
 
 ## License
 

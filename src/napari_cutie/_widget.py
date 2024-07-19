@@ -64,7 +64,7 @@ def find_nearest_masks(mask_contours, cell_dist):
 
 @torch.inference_mode()
 @torch.cuda.amp.autocast()
-def track_with_cutie(img_stack, mask, cell_dist=4, padding=50):
+def track_with_cutie(img_stack, mask, cell_dist=4, padding=50, shift=False):
     cutie = get_default_model()
 
     log_scale = 0.005
@@ -86,7 +86,7 @@ def track_with_cutie(img_stack, mask, cell_dist=4, padding=50):
     mask_contours = {i: find_contours(mask == i) for i in mask_numbers}
     batches = find_nearest_masks(mask_contours, cell_dist)
 
-    combined_mask = np.zeros_like(img_stack[1:], dtype=np.uint8)
+    combined_mask = np.zeros_like(img_stack[0:], dtype=np.uint8)
     print(f'batch number: {len(batches)}')
 
     # for batch in batches:
@@ -102,25 +102,21 @@ def track_with_cutie(img_stack, mask, cell_dist=4, padding=50):
         pad_y1 = max(y - padding, 0)
         pad_x2 = min(x + w + padding, mask.shape[1])
         pad_y2 = min(y + h + padding, mask.shape[0])
-        cropped_images = [img[pad_y1:pad_y2, pad_x1:pad_x2] for img in tiff_stack_rgb[1:]]
+        dif_x = pad_x2 - pad_x1
+        dif_y = pad_y2 - pad_y1
         template_mask = batch_mask[pad_y1:pad_y2, pad_x1:pad_x2]
-
-        # plt.figure(figsize=(5, 5))
-        # plt.imshow(cropped_images[0])
-        # plt.imshow(template_mask, alpha=0.5)
-        # plt.title("Template mask with cropped image")
-        # plt.show()
 
         # Convert template_mask to a tensor and move it to the same device as the image
         template_mask_tensor = torch.from_numpy(template_mask).cuda()
 
         batch_int = [int(b) for b in batch]  # Convert batch elements to integers
         # make masks frames - 1, because first mask is template, no need to process it
-        masks = np.zeros_like(cropped_images, dtype=np.uint8)
+        masks = np.zeros_like(tiff_stack_rgb, dtype=np.uint8)
         # make masks without rgb channels
         masks = masks[:, :, :, 0]
 
-        for ti, image in enumerate(cropped_images):
+        for ti in range(tiff_stack_rgb.shape[0]):
+            image = tiff_stack_rgb[ti, pad_y1:pad_y2, pad_x1:pad_x2, :]
             image_pil = Image.fromarray(image)
             image_tensor = to_tensor(image_pil).cuda().float()
             if ti == 0:
@@ -128,20 +124,21 @@ def track_with_cutie(img_stack, mask, cell_dist=4, padding=50):
             else:
                 output_prob = processor.step(image_tensor, idx_mask=False)
 
-            # mask = processor.output_prob_to_mask(output_prob)
             template_mask_tensor = processor.output_prob_to_mask(output_prob)
-            # mask_pil = Image.fromarray(mask.cpu().numpy().astype(np.uint8))
-            masks[ti] = template_mask_tensor.cpu().numpy().astype(np.uint8)
-            mask_pil = Image.fromarray(masks[ti])
-            # mask_pil.show()
-            # show the generated mask
-            # plt.figure(figsize=(5, 5))
-            # plt.imshow(image)
-            # plt.imshow(mask_pil, alpha=0.5)
-            # plt.title(f"Generated mask at frame {ti}")
-            # plt.show()
+            mask_this_frame = template_mask_tensor.cpu().numpy().astype(np.uint8)
+            masks[ti, pad_y1:pad_y2, pad_x1:pad_x2] = mask_this_frame
+            if shift:
+                x, y, _, _ = cv2.boundingRect(masks[ti])
+                pad_x1 = max(x - padding, 0)
+                pad_y1 = max(y - padding, 0)
+                pad_x2 = min(pad_x1 + dif_x, mask.shape[1])
+                if pad_x2 == mask.shape[1]:
+                    pad_x1 = pad_x2 - dif_x
+                pad_y2 = min(pad_y1 + dif_y, mask.shape[0])
+                if pad_y2 == mask.shape[0]:
+                    pad_y1 = pad_y2 - dif_y
 
-        combined_mask[:, pad_y1:pad_y2, pad_x1:pad_x2] = np.maximum(combined_mask[:, pad_y1:pad_y2, pad_x1:pad_x2], masks)
+        combined_mask[:, :, :] = np.maximum(combined_mask[:, :, :], masks)
 
     return combined_mask
 
@@ -149,9 +146,9 @@ def track_with_cutie(img_stack, mask, cell_dist=4, padding=50):
 @magic_factory(call_button='track')
 def cutie_track_widget(
     img_stack: "napari.layers.Image", annotation: "napari.layers.Labels",
-    cell_dist: "int" = 4, padding: "int" = 20
+    cell_dist: "int" = 4, padding: "int" = 20, shift: "bool" = False
 ) -> "napari.types.LabelsData":
     annotation = annotation.data[0]
     if np.max(annotation) == 0:
         raise NotImplementedError
-    return track_with_cutie(img_stack.data, annotation, cell_dist, padding)
+    return track_with_cutie(img_stack.data, annotation, cell_dist, padding, shift)
