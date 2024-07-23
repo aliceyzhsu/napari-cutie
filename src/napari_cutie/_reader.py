@@ -15,13 +15,11 @@ def napari_get_reader(path):
         return None
 
     if not path.endswith("_seg.npy"):
-        show_error('it is not a cellpose_styled seg file')
-        return None
+        return reader_lonely_mask
 
     active_layer = napari.current_viewer().layers.selection.active
     if active_layer is None or not isinstance(active_layer, napari.layers.Image):
-        show_error('current layer is not an Image layer')
-        return None
+        return reader_lonely_mask
 
     # otherwise we return the *function* that can read ``path``.
     return reader_function
@@ -37,6 +35,20 @@ def reader_function(path):
     name = f'initial_annotation_{match.groups()[0]}'
     add_kwargs = {"name": name}
 
+    layer_type = "labels"
+    return [(labels, add_kwargs, layer_type)]
+
+
+def reader_lonely_mask(path):
+    data = np.load(path, allow_pickle=True).item()['masks']
+    match = re.search(r'(\d+)_seg.npy', path)
+    if match is None:
+        index = 0
+    else:
+        index = int(match.groups()[0])
+    name = f'annotation_frame_{index:03d}'
+    add_kwargs = {"name": name}
+    labels = data
     layer_type = "labels"
     return [(labels, add_kwargs, layer_type)]
 

@@ -1,22 +1,28 @@
 from typing import TYPE_CHECKING
-
-import tifffile
+import re
 from magicgui import magic_factory
 import numpy as np
 import cv2
-import tifffile as tiff
 from matplotlib import pyplot as plt
 from scipy.spatial.distance import cdist
 import torch
 from torchvision.transforms.functional import to_tensor
 from PIL import Image
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from cutie.inference.inference_core import InferenceCore
 from cutie.utils.get_default_model import get_default_model
+from enum import Enum
+import time
 
 
 if TYPE_CHECKING:
     import napari
+
+
+class ModeChoice(Enum):
+    fixed_field = 'fixed'
+    shift_field = 'shift'
+    atomic = 'atomic'
 
 
 def find_contours(mask):
@@ -64,8 +70,10 @@ def find_nearest_masks(mask_contours, cell_dist):
 
 @torch.inference_mode()
 @torch.cuda.amp.autocast()
-def track_with_cutie(img_stack, mask, cell_dist=4, padding=50, shift=False):
-    cutie = get_default_model()
+def track_with_cutie(img_stack, mask, cell_dist=4, padding=50, mode=ModeChoice.fixed_field,
+                     frame=0, cutie=None, recur=False):
+    if not cutie:
+        cutie = get_default_model()
 
     log_scale = 0.005
     log_constant = 65535 / np.log(1 + 65535 * log_scale)
@@ -83,72 +91,107 @@ def track_with_cutie(img_stack, mask, cell_dist=4, padding=50, shift=False):
 
     mask_numbers = np.unique(mask)
     mask_numbers = mask_numbers[mask_numbers != 0]
-    mask_contours = {i: find_contours(mask == i) for i in mask_numbers}
-    batches = find_nearest_masks(mask_contours, cell_dist)
+    if recur:
+        batches = [mask_numbers]
+    else:
+        mask_contours = {i: find_contours(mask == i) for i in mask_numbers}
+        batches = find_nearest_masks(mask_contours, cell_dist)
 
     combined_mask = np.zeros_like(img_stack[0:], dtype=np.uint8)
-    print(f'batch number: {len(batches)}')
+    combined_mask[0] = mask
 
-    # for batch in batches:
-    # add tqdm
-    for batch in tqdm(batches, desc='Tracking batch'):
-        processor = InferenceCore(cutie, cfg=cutie.cfg)
-        batch_mask = np.zeros_like(mask, dtype=np.uint8)
-        for mask_number in batch:
-            batch_mask += (mask == mask_number).astype(np.uint8) * mask_number
+    if mode == ModeChoice.fixed_field or mode == ModeChoice.shift_field:
+        start_time = time.time()
+        for batch in tqdm(batches, desc='Tracking batch', leave=False):
+            processor = InferenceCore(cutie, cfg=cutie.cfg)
+            batch_mask = np.zeros_like(mask, dtype=np.uint8)
+            for mask_number in batch:
+                batch_mask += (mask == mask_number).astype(np.uint8) * mask_number
 
-        x, y, w, h = cv2.boundingRect(batch_mask)
-        pad_x1 = max(x - padding, 0)
-        pad_y1 = max(y - padding, 0)
-        pad_x2 = min(x + w + padding, mask.shape[1])
-        pad_y2 = min(y + h + padding, mask.shape[0])
-        dif_x = pad_x2 - pad_x1
-        dif_y = pad_y2 - pad_y1
-        template_mask = batch_mask[pad_y1:pad_y2, pad_x1:pad_x2]
+            x, y, w, h = cv2.boundingRect(batch_mask)
+            pad_x1 = max(x - padding, 0)
+            pad_y1 = max(y - padding, 0)
+            pad_x2 = min(x + w + padding, mask.shape[1])
+            pad_y2 = min(y + h + padding, mask.shape[0])
+            dif_x = pad_x2 - pad_x1
+            dif_y = pad_y2 - pad_y1
+            template_mask = batch_mask[pad_y1:pad_y2, pad_x1:pad_x2]
 
-        # Convert template_mask to a tensor and move it to the same device as the image
-        template_mask_tensor = torch.from_numpy(template_mask).cuda()
+            # Convert template_mask to a tensor and move it to the same device as the image
+            template_mask_tensor = torch.from_numpy(template_mask).cuda()
 
-        batch_int = [int(b) for b in batch]  # Convert batch elements to integers
-        # make masks frames - 1, because first mask is template, no need to process it
-        masks = np.zeros_like(tiff_stack_rgb, dtype=np.uint8)
-        # make masks without rgb channels
-        masks = masks[:, :, :, 0]
+            batch_int = [int(b) for b in batch]  # Convert batch elements to integers
+            # make masks frames - 1, because first mask is template, no need to process it
+            masks = np.zeros_like(tiff_stack_rgb, dtype=np.uint8)
+            # make masks without rgb channels
+            masks = masks[:, :, :, 0]
 
-        for ti in range(tiff_stack_rgb.shape[0]):
-            image = tiff_stack_rgb[ti, pad_y1:pad_y2, pad_x1:pad_x2, :]
-            image_pil = Image.fromarray(image)
-            image_tensor = to_tensor(image_pil).cuda().float()
-            if ti == 0:
-                output_prob = processor.step(image_tensor, template_mask_tensor, objects=batch_int, idx_mask=True)
-            else:
-                output_prob = processor.step(image_tensor, idx_mask=False)
+            for ti in range(tiff_stack_rgb.shape[0]):
+                image = tiff_stack_rgb[ti, pad_y1:pad_y2, pad_x1:pad_x2, :]
+                image_pil = Image.fromarray(image)
+                image_tensor = to_tensor(image_pil).cuda().float()
+                if ti == 0:
+                    output_prob = processor.step(image_tensor, template_mask_tensor, objects=batch_int, idx_mask=True)
+                else:
+                    output_prob = processor.step(image_tensor, idx_mask=False)
 
-            template_mask_tensor = processor.output_prob_to_mask(output_prob)
-            mask_this_frame = template_mask_tensor.cpu().numpy().astype(np.uint8)
-            masks[ti, pad_y1:pad_y2, pad_x1:pad_x2] = mask_this_frame
-            if shift:
-                x, y, _, _ = cv2.boundingRect(masks[ti])
-                pad_x1 = max(x - padding, 0)
-                pad_y1 = max(y - padding, 0)
-                pad_x2 = min(pad_x1 + dif_x, mask.shape[1])
-                if pad_x2 == mask.shape[1]:
-                    pad_x1 = pad_x2 - dif_x
-                pad_y2 = min(pad_y1 + dif_y, mask.shape[0])
-                if pad_y2 == mask.shape[0]:
-                    pad_y1 = pad_y2 - dif_y
+                template_mask_tensor = processor.output_prob_to_mask(output_prob)
+                mask_this_frame = template_mask_tensor.cpu().numpy().astype(np.uint8)
+                masks[ti, pad_y1:pad_y2, pad_x1:pad_x2] = mask_this_frame
+                if mode == ModeChoice.shift_field:
+                    x, y, _, _ = cv2.boundingRect(masks[ti])
+                    pad_x1 = max(x - padding, 0)
+                    pad_y1 = max(y - padding, 0)
+                    pad_x2 = min(pad_x1 + dif_x, mask.shape[1])
+                    if pad_x2 == mask.shape[1]:
+                        pad_x1 = pad_x2 - dif_x
+                    pad_y2 = min(pad_y1 + dif_y, mask.shape[0])
+                    if pad_y2 == mask.shape[0]:
+                        pad_y1 = pad_y2 - dif_y
 
-        combined_mask[:, :, :] = np.maximum(combined_mask[:, :, :], masks)
+            combined_mask[:, :, :] = np.maximum(combined_mask[:, :, :], masks)
+        name = f'{mode.value}_track_result'
+        end_time = time.time()
+        duration = end_time - start_time
+        print(f'time: {duration}')
 
-    return combined_mask
+        return combined_mask, {"name": name}, "labels"
+
+    elif mode == ModeChoice.atomic:
+        start_time = time.time()
+        for ti in trange(tiff_stack_rgb.shape[0] - 1):
+            atomic_combined_mask, _, _ = track_with_cutie(img_stack[ti: ti + 2], combined_mask[ti], cell_dist,
+                                                          padding, ModeChoice.fixed_field, ti, cutie, recur=True)
+            combined_mask[ti + 1] = atomic_combined_mask[1]
+        end_time = time.time()
+        duration = end_time - start_time
+        print(f'time: {duration}')
+        name = f'{mode.value}_track_result'
+        return combined_mask, {"name": name}, "labels"
+
+    else:
+        raise NotImplementedError
 
 
 @magic_factory(call_button='track')
 def cutie_track_widget(
     img_stack: "napari.layers.Image", annotation: "napari.layers.Labels",
-    cell_dist: "int" = 4, padding: "int" = 20, shift: "bool" = False
-) -> "napari.types.LabelsData":
-    annotation = annotation.data[0]
-    if np.max(annotation) == 0:
-        raise NotImplementedError
-    return track_with_cutie(img_stack.data, annotation, cell_dist, padding, shift)
+    cell_dist: "int" = 4, padding: "int" = 20, mode: ModeChoice = ModeChoice.fixed_field
+) -> "napari.types.LayerDataTuple":
+    # 3d labels layer
+    if len(annotation.data.shape) == 3:
+        annotation = annotation.data[0]
+        if np.max(annotation) == 0:
+            raise NotImplementedError
+        frame = 0
+    # 2d labels layer
+    elif len(annotation.data.shape) == 2:
+        if np.max(annotation.data) == 0:
+            raise NotImplementedError
+        match = re.search(r'_(\d+)', annotation.name)
+        annotation = annotation.data
+        frame = int(match.groups()[0])
+    # error
+    else:
+        raise ValueError
+    return track_with_cutie(img_stack.data, annotation, cell_dist, padding, mode, frame)
